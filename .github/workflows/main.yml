@@ -30,9 +30,10 @@ jobs:
       - name: Connect to Tailscale Network
         id: connect_tailscale
         run: |
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
+          $tsPath = (Get-Command tailscale.exe).Source
+          & $tsPath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
           for ($i=0; $i -lt 10; $i++) {
-            $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+            $tsIP = & $tsPath ip -4
             if ($tsIP) { break }
             Start-Sleep -Seconds 3
           }
