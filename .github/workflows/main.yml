@@ -30,13 +30,17 @@ jobs:
       - name: Connect to Tailscale Network
         id: connect_tailscale
         run: |
-          $tsPath = (Get-Command tailscale.exe).Source
-          & $tsPath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
-          for ($i=0; $i -lt 10; $i++) {
-            $tsIP = & $tsPath ip -4
-            if ($tsIP) { break }
-            Start-Sleep -Seconds 3
+          $possiblePaths = @(
+            "C:\Program Files\Tailscale\tailscale.exe",
+            "C:\Program Files (x86)\Tailscale\tailscale.exe"
+          )
+          $tsPath = $possiblePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $tsPath) {
+            Write-Error "Could not find tailscale.exe in any expected location."
+            exit 1
           }
+          & $tsPath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
+          $tsIP = & $tsPath ip -4
           if (-not $tsIP) {
             Write-Error "Tailscale IP not assigned."
             exit 1
@@ -44,6 +48,7 @@ jobs:
           echo "ip=$tsIP" >> $env:GITHUB_OUTPUT
 
       - name: Send Private Credentials via Discord
+        if: success()
         uses: tsickert/discord-webhook@v5.3.0
         with:
           webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
