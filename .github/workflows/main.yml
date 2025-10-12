@@ -1,4 +1,4 @@
-name: DEBUG RDP Session
+name: Secure Public RDP Access
 
 on:
   workflow_dispatch:
@@ -18,29 +18,42 @@ jobs:
         id: create_user
         run: |
           $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 20 | ForEach-Object {[char]$_})
-          # ... rest of user creation script ...
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "runner" -Password $securePass -FullName "GitHub Runner"
           Add-LocalGroupMember -Group "Administrators" -Member "runner"
-          Add-LocalGroup-Member -Group "Remote Desktop Users" -Member "runner"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runner"
           echo "password=$password" >> $env:GITHUB_OUTPUT
 
-      - name: Install Tailscale
-        run: Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale_setup.exe" ; ./tailscale_setup.exe /quiet
-
-      - name: Debug Filesystem
-        run: |
-          Write-Host "--- Listing C:\Program Files ---"
-          Get-ChildItem -Path "C:\Program Files" -Depth 1
-          Write-Host "--- Listing C:\Program Files (x86) ---"
-          Get-ChildItem -Path "C:\Program Files (x86)" -Depth 1
-          Write-Host "--- Searching for tailscale.exe ---"
-          Get-ChildItem -Path "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter tailscale.exe -ErrorAction SilentlyContinue | Select-Object FullName
+      - name: Install Tailscale via Chocolatey
+        run: choco install tailscale -y --no-progress
 
       - name: Connect to Tailscale Network
         id: connect_tailscale
         run: |
-          # This step will still fail, but we are interested in the debug step above
-          $tsPath = (Get-Command tailscale.exe).Source # Dummy command for now
+          $tsPath = (Get-Command tailscale.exe).Source
           & $tsPath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
-          # ... rest of script
+          for ($i=0; $i -lt 10; $i++) {
+            $tsIP = & $tsPath ip -4
+            if ($tsIP) { break }
+            Start-Sleep -Seconds 3
+          }
+          if (-not $tsIP) {
+            Write-Error "Tailscale IP not assigned."
+            exit 1
+          }
+          echo "ip=$tsIP" >> $env:GITHUB_OUTPUT
+
+      - name: Send Private Credentials via Discord
+        if: success()
+        uses: tsickert/discord-webhook@v5.3.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          content: |
+            **✅ RDP Session is Ready**
+            **Repo:** ${{ github.repository }}
+            **IP Address:** `${{ steps.connect_tailscale.outputs.ip }}`
+            **Username:** `runner`
+            **Password:** `||${{ steps.create_user.outputs.password }}||`
+
+      - name: Keep Connection Alive
+        run: Start-Sleep -Seconds 21000
