@@ -1,0 +1,49 @@
+name: Ubuntu RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Install Desktop Environment and XRDP
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
+          
+          echo xfce4-session > ~/.xsession
+          sudo cp ~/.xsession /etc/skel/
+          sudo adduser xrdp ssl-cert
+          
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+      - name: Setup Secure Password
+        run: |
+          PASSWORD=$(openssl rand -base64 12)
+          echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          echo "runner:$PASSWORD" | sudo chpasswd
+
+      - name: Install and Connect Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=ubuntu-gh-$GITHUB_RUN_ID
+          
+          TS_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Maintain Connection & Print Credentials
+        run: |
+          echo -e "\n=== UBUNTU RDP ACCESS ==="
+          echo "Address:  $TAILSCALE_IP"
+          echo "Username: runner"
+          echo "Password: $RDP_PASSWORD"
+          echo -e "=========================\n"
+          
+          while true; do
+              echo "[$(date)] RDP Active - Cancel workflow to terminate"
+              sleep 300
+          done
