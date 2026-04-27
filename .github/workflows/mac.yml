@@ -1,0 +1,58 @@
+name: macOS VNC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-vnc:
+    runs-on: macos-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Setup Secure Password
+        run: |
+          # Generate a random 12-character password
+          PASSWORD=$(openssl rand -base64 12)
+          echo "VNC_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          
+          # Set the password for the default GitHub macOS user (runner)
+          sudo dscl . -passwd /Users/runner "$PASSWORD"
+
+      - name: Enable macOS Screen Sharing (VNC)
+        run: |
+          # Use Apple's Remote Desktop kickstart to enable screen sharing
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all
+          
+          # Enable Legacy VNC protocol for 3rd-party viewers
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$PASSWORD" -restart -agent
+
+      - name: Install and Connect Tailscale
+        run: |
+          # Install the open-source Tailscale CLI via Homebrew
+          brew install tailscale
+          
+          # Start the Tailscale daemon in the background
+          sudo bash -c 'tailscaled > /tmp/tailscaled.log 2>&1 &'
+          sleep 5
+          
+          # Authenticate and bring up the Tailscale network
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=macos-gh-$GITHUB_RUN_ID
+          
+          # Fetch and save the assigned IP
+          TS_IP=$(sudo tailscale ip -4)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Maintain Connection & Print Credentials
+        run: |
+          echo -e "\n=== MACOS VNC ACCESS ==="
+          echo "Address:  $TAILSCALE_IP"
+          echo "Username: runner"
+          echo "Password: $VNC_PASSWORD"
+          echo -e "=========================\n"
+          
+          # Keep runner active indefinitely
+          while true; do
+              echo "[$(date)] VNC Active - Cancel workflow to terminate"
+              sleep 300
+          done
