@@ -1,44 +1,144 @@
-name: macOS VNC
+name: Ultimate Remote Workspace
 
 on:
   workflow_dispatch:
+    inputs:
+      os_choice:
+        description: 'Select Operating System'
+        required: true
+        default: 'ubuntu-latest'
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+      timeout:
+        description: 'Auto-Shutdown Timer (Hours)'
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '3'
+          - '6'
 
 jobs:
-  macos-vnc:
-    runs-on: macos-latest
-    timeout-minutes: 3600
-
+  windows-rdp:
+    name: Windows Server (RDP)
+    if: github.event.inputs.os_choice == 'windows-latest'
+    runs-on: windows-latest
     steps:
-      - name: Setup Secure Password and User
+      - name: Generate Password & Setup RDP
         run: |
-          # Generate a random 12-character password
-          PASSWORD=$(openssl rand -base64 12)
-          echo "VNC_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          $Password = "Workspace@$(Get-Random -Minimum 1000 -Maximum 9999)"
+          net user runneradmin $Password
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          echo "RDP_PASSWORD=$Password" >> $env:GITHUB_ENV
+
+      - name: Install and Connect Tailscale
+        run: |
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe' -OutFile 'tailscale-setup.exe'
+          Start-Process -FilePath 'tailscale-setup.exe' -ArgumentList '/quiet' -Wait
+          Start-Sleep -Seconds 5
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=win-gh-${{ github.run_id }}
+          $TS_IP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          echo "TAILSCALE_IP=$TS_IP" >> $env:GITHUB_ENV
+
+      - name: Print Credentials & Start Timer
+        run: |
+          Write-Host "`n=== WINDOWS RDP ACCESS ==="
+          Write-Host "Address:  $env:TAILSCALE_IP"
+          Write-Host "Username: runneradmin"
+          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "==========================`n"
           
-          # Workaround: Create a completely new admin user (bypasses the eDSAuthFailed error)
+          $Hours = [int]"${{ github.event.inputs.timeout }}"
+          $MaxSeconds = $Hours * 3600
+          $Elapsed = 0
+          Write-Host "Timer started: Auto-shutdown in $Hours hour(s)."
+          while ($Elapsed -lt $MaxSeconds) {
+              Start-Sleep -Seconds 300
+              $Elapsed += 300
+          }
+
+  ubuntu-rdp:
+    name: Ubuntu Desktop (XRDP)
+    if: github.event.inputs.os_choice == 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install XFCE4 and XRDP
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
+          echo xfce4-session > ~/.xsession
+          sudo cp ~/.xsession /etc/skel/
+          sudo adduser xrdp ssl-cert
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+      - name: Setup Secure Password
+        run: |
+          PASSWORD="Workspace@$RANDOM"
+          echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          echo "runner:$PASSWORD" | sudo chpasswd
+
+      - name: Install and Connect Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=ubuntu-gh-$GITHUB_RUN_ID
+          TS_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Print Credentials & Start Timer
+        run: |
+          echo -e "\n=== UBUNTU RDP ACCESS ==="
+          echo "Address:  $TAILSCALE_IP"
+          echo "Username: runner"
+          echo "Password: $RDP_PASSWORD"
+          echo -e "=========================\n"
+          
+          HOURS=${{ github.event.inputs.timeout }}
+          MAX_SECONDS=$(( HOURS * 3600 ))
+          ELAPSED=0
+          echo "Timer started: Auto-shutdown in $HOURS hour(s)."
+          while [ $ELAPSED -lt $MAX_SECONDS ]; do
+              sleep 300
+              ELAPSED=$(( ELAPSED + 300 ))
+          done
+
+  macos-vnc:
+    name: macOS Desktop (VNC)
+    if: github.event.inputs.os_choice == 'macos-latest'
+    runs-on: macos-latest
+    steps:
+      - name: Setup Password and User
+        run: |
+          PASSWORD="Workspace@$RANDOM"
+          echo "VNC_PASSWORD=$PASSWORD" >> $GITHUB_ENV
           sudo sysadminctl -addUser vncuser -fullName "VNC Admin" -password "$PASSWORD" -admin
 
       - name: Enable macOS Screen Sharing (VNC)
         run: |
-          # Grant our new 'vncuser' full remote management privileges and start the server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -users vncuser -privs -all -restart -agent
-          
-          # Enable Legacy VNC protocol so 3rd-party viewers (like RealVNC) can connect
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$PASSWORD" -restart -agent
 
       - name: Install and Connect Tailscale
         run: |
           brew install tailscale
-          
           sudo bash -c 'tailscaled > /tmp/tailscaled.log 2>&1 &'
           sleep 5
-          
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=macos-gh-$GITHUB_RUN_ID
-          
           TS_IP=$(sudo tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: Maintain Connection & Print Credentials
+      - name: Force WindowServer Restart
+        run: |
+          sudo killall WindowServer || true
+          sudo killall loginwindow || true
+          sleep 5
+
+      - name: Print Credentials & Start Timer
         run: |
           echo -e "\n=== MACOS VNC ACCESS ==="
           echo "Address:  $TAILSCALE_IP"
@@ -46,7 +146,12 @@ jobs:
           echo "Password: $VNC_PASSWORD"
           echo -e "=========================\n"
           
-          while true; do
-              echo "[$(date)] VNC Active - Cancel workflow to terminate"
+          HOURS=${{ github.event.inputs.timeout }}
+          MAX_SECONDS=$(( HOURS * 3600 ))
+          ELAPSED=0
+          echo "Timer started: Auto-shutdown in $HOURS hour(s)."
+          while [ $ELAPSED -lt $MAX_SECONDS ]; do
               sleep 300
+              ELAPSED=$(( ELAPSED + 300 ))
           done
+          
